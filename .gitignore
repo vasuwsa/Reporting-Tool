@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+saved_values.json
+.claude/
