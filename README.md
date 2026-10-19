@@ -38,4 +38,3 @@ streamlit run app.py
 ## Requirements
 
 - Python 3.9+
-- A valid Strobes platform account with API access
