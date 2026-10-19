@@ -1,6 +1,6 @@
 # Strobes Report Generator
 
-A Streamlit app that automates VAPT report generation using the Strobes CTEM platform API.
+A Streamlit app that automates multiple reports generation.
 
 ## Features
 
