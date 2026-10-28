@@ -246,7 +246,7 @@ def _eng_ok(rep: dict) -> bool:
 
 def missing_fields(rep) -> list[str]:
     miss = []
-    if not rep.get("asset_id") or rep["asset_id"] not in st.session_state.get("loaded_assets", {}):
+    if not rep.get("view_query") and (not rep.get("asset_id") or rep["asset_id"] not in st.session_state.get("loaded_assets", {})):
         miss.append("Asset")
         return miss
     if not rep.get("engagement"):
@@ -294,6 +294,7 @@ ss("api", None)
 ss("user", None)
 ss("loaded_assets", {})    # {asset_id (int): {"asset": dict, "engagements": list, "asset_query": str}}
 ss("eng_defs", [])          # org-level engagement field slug list (same for all assets)
+ss("org_engagements", [])   # all org engagements (for tag-based / network reports)
 ss("url_slots", [uuid.uuid4().hex[:8]])  # stable IDs for each asset URL input field
 ss("view_queries", [])     # queries from tag-based view URLs (no asset.id)
 ss("reports", [new_report()])
@@ -353,6 +354,7 @@ with st.container(border=True):
                 user_info = None
                 eng_defs: list = []
                 url_errors: list = []
+                org_engs: list = []
 
                 for url in asset_url_list:
                     try:
@@ -364,7 +366,8 @@ with st.container(border=True):
                         api_inst = Strobes(parsed["base_url"], parsed["organization_id"], jwt=jwt)
                         user_info = api_inst.whoami()
                         try:
-                            eng_defs = [d["slug"] for d in api_inst.engagement_field_defs()] or ENGAGEMENT_REQUIRED
+                            all_defs = api_inst.engagement_field_defs()
+                            eng_defs = [d["slug"] for d in all_defs if d.get("isRequired")] or ENGAGEMENT_REQUIRED
                         except Exception:
                             eng_defs = ENGAGEMENT_REQUIRED
                     aid = parsed["asset_id"]
@@ -399,6 +402,10 @@ with st.container(border=True):
                                 }
                     except Exception as e:
                         url_errors.append(f"Could not load org assets: {e}")
+                    try:
+                        org_engs = api_inst.list_engagements()
+                    except Exception:
+                        pass
 
                 for err in url_errors:
                     st.error(err)
@@ -431,7 +438,8 @@ with st.container(border=True):
 
                     st.session_state.update(api=api_inst, user=user_info,
                                             loaded_assets=loaded, eng_defs=eng_defs,
-                                            view_queries=view_queries)
+                                            view_queries=view_queries,
+                                            org_engagements=org_engs)
             except PermissionError as e:
                 st.error(str(e))
             except Exception as e:
@@ -473,7 +481,7 @@ if not api:
     st.stop()
 
 loaded_assets: dict = st.session_state.loaded_assets
-if not loaded_assets:
+if not loaded_assets and not st.session_state.view_queries:
     st.info("No assets loaded. Sign in again.")
     st.stop()
 
@@ -578,18 +586,28 @@ def report_card(idx: int, rep: dict):
         if view_q:
             st.caption(f"View filter: `{view_q}`")
 
-        cur_asset_id = rep.get("asset_id")
-        asset_idx = asset_ids.index(cur_asset_id) if cur_asset_id in asset_ids else None
-
         a1, a2 = st.columns(2)
-        picked_asset_id = a1.selectbox(
-            "Asset *",
-            options=asset_ids,
-            format_func=_asset_label,
-            index=asset_idx,
-            key=f"asset:{rep['uid']}",
-            placeholder="Choose an asset",
-        )
+
+        cur_asset_id = rep.get("asset_id")
+        if view_q:
+            asset_options = [None] + asset_ids
+            picked_asset_id = a1.selectbox(
+                "Asset (optional)",
+                options=asset_options,
+                format_func=lambda aid: "— None (tag-based / network) —" if aid is None else _asset_label(aid),
+                index=asset_options.index(cur_asset_id) if cur_asset_id in asset_options else 0,
+                key=f"asset:{rep['uid']}",
+            )
+        else:
+            asset_idx = asset_ids.index(cur_asset_id) if cur_asset_id in asset_ids else None
+            picked_asset_id = a1.selectbox(
+                "Asset *",
+                options=asset_ids,
+                format_func=_asset_label,
+                index=asset_idx,
+                key=f"asset:{rep['uid']}",
+                placeholder="Choose an asset",
+            )
 
         if picked_asset_id != cur_asset_id:
             rep["asset_id"] = picked_asset_id
@@ -598,46 +616,59 @@ def report_card(idx: int, rep: dict):
             st.rerun()
 
         eng_ok_for_rep = False
-        if rep.get("asset_id") and rep["asset_id"] in loaded_assets:
-            ac = loaded_assets[rep["asset_id"]]
-            engs = ac["engagements"]
-            if not engs:
-                a2.error("No active engagements linked to this asset. Link one in Strobes first.")
-            else:
-                cur_eng = rep.get("engagement")
-                cur_eng_id = cur_eng["id"] if cur_eng else None
-                eng_idx = next((i for i, e in enumerate(engs) if e["id"] == cur_eng_id), None)
+        if picked_asset_id and picked_asset_id in loaded_assets:
+            engs = loaded_assets[picked_asset_id]["engagements"]
+        elif view_q:
+            engs = st.session_state.get("org_engagements", [])
+        else:
+            engs = []
 
-                picked_eng = a2.selectbox(
-                    "Engagement *",
-                    engs,
-                    format_func=lambda e: e["name"],
-                    index=eng_idx,
-                    key=f"eng:{rep['uid']}",
-                    placeholder="Choose an engagement",
-                )
+        if not engs and picked_asset_id and picked_asset_id in loaded_assets:
+            a2.error("No active engagements linked to this asset. Link one in Strobes first.")
+        elif not engs and view_q and not picked_asset_id:
+            a2.warning("No active engagements found. Create one in Strobes first.")
+        elif engs:
+            cur_eng = rep.get("engagement")
+            cur_eng_id = cur_eng["id"] if cur_eng else None
+            eng_idx = next((i for i, e in enumerate(engs) if e["id"] == cur_eng_id), None)
 
-                if picked_eng and (cur_eng is None or picked_eng["id"] != cur_eng_id):
-                    rep["engagement"] = picked_eng
+            picked_eng = a2.selectbox(
+                "Engagement *",
+                engs,
+                format_func=lambda e: e["name"],
+                index=eng_idx,
+                key=f"eng:{rep['uid']}",
+                placeholder="Choose an engagement",
+            )
+
+            if picked_eng and (cur_eng is None or picked_eng["id"] != cur_eng_id):
+                rep["engagement"] = picked_eng
+                if picked_asset_id and picked_asset_id in loaded_assets:
+                    ac = loaded_assets[picked_asset_id]
                     base_query = view_q if view_q else ac["asset_query"]
+                else:
+                    base_query = view_q
+                if base_query:
                     rep["search_query"] = f'{base_query} and is_active in ("true") and engagements.id = "{picked_eng["id"]}"'
-                    st.rerun()
+                else:
+                    rep["search_query"] = f'is_active in ("true") and engagements.id = "{picked_eng["id"]}"'
+                st.rerun()
 
-                if rep.get("engagement"):
-                    eng = rep["engagement"]
-                    fields = _eng_fields(eng)
-                    required = st.session_state.get("eng_defs") or ENGAGEMENT_REQUIRED
-                    missing_eng = [k for k in required if not str(fields.get(k) or "").strip()]
-                    eng_ok_for_rep = not missing_eng
-                    if not eng_ok_for_rep:
-                        present = ", ".join(f"{k}={fields[k]}" for k in required if k not in missing_eng) or "none"
-                        st.error(f"Engagement '{eng['name']}' is missing required fields: {', '.join(missing_eng)}. "
-                                 f"Present: {present}. Fill them in Strobes, then sign in again.")
-                    else:
-                        st.caption("Engagement fields OK  ·  " +
-                                   ", ".join(f"{k}={fields[k]}" for k in required if k in fields))
-                    if rep.get("search_query"):
-                        st.caption(f"Findings filter: `{rep['search_query']}`")
+            if rep.get("engagement"):
+                eng = rep["engagement"]
+                fields = _eng_fields(eng)
+                required = st.session_state.get("eng_defs") or ENGAGEMENT_REQUIRED
+                missing_eng = [k for k in required if not str(fields.get(k) or "").strip()]
+                eng_ok_for_rep = not missing_eng
+                if not eng_ok_for_rep:
+                    present = ", ".join(f"{k}={fields[k]}" for k in required if k not in missing_eng) or "none"
+                    st.error(f"Engagement '{eng['name']}' is missing required fields: {', '.join(missing_eng)}. "
+                             f"Present: {present}. Fill them in Strobes, then sign in again.")
+                else:
+                    st.caption("Engagement fields OK  ·  " +
+                               ", ".join(f"{k}={fields[k]}" for k in required if k in fields))
+                if rep.get("search_query"):
+                    st.caption(f"Findings filter: `{rep['search_query']}`")
 
         # ---- report name + template ----
         rep["name"] = st.text_input("Report name *", rep["name"], key=f"name:{rep['uid']}",
@@ -810,6 +841,16 @@ all_eng_ok = all(_eng_ok(r) for r in reports)
 b1, b2, _ = st.columns([1, 1, 4])
 if not all_eng_ok:
     st.caption("Engagement required fields must be filled in Strobes for every report before reviewing.")
+    for i, r in enumerate(reports):
+        if not _eng_ok(r):
+            eng = r.get("engagement")
+            if not eng:
+                st.warning(f"Report {i+1} ({r.get('name') or 'unnamed'}): No engagement selected.")
+            else:
+                fields = _eng_fields(eng)
+                required = st.session_state.get("eng_defs") or ENGAGEMENT_REQUIRED
+                missing = [k for k in required if not str(fields.get(k) or "").strip()]
+                st.warning(f"Report {i+1} ({r.get('name') or 'unnamed'}): Engagement '{eng['name']}' missing: {', '.join(missing)}")
 if b1.button("Review all", disabled=not all_eng_ok):
     run(preview_only=True)
     st.rerun()

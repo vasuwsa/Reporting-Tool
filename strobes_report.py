@@ -207,6 +207,16 @@ class Strobes:
         }}'''
         return self.gql(q)["allEngagements"]["objects"]
 
+    def list_engagements(self, page_size: int = 50) -> list[dict]:
+        q = f'''{{
+          allEngagements(organizationId:"{self.org}",
+                         searchQuery:"is_active in (\\"true\\")",
+                         orderBy:["-created"], page:1, pageSize:{page_size}) {{
+            objects {{ id name fields isActive state }}
+          }}
+        }}'''
+        return self.gql(q)["allEngagements"]["objects"]
+
     def engagement_field_defs(self) -> list[dict]:
         """Org-level engagement custom field definitions (what the template pre-check looks at)."""
         q = f'''{{
