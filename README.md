@@ -14,8 +14,8 @@ A Streamlit app that automates CTEM report generation using the Strobes platform
 
 ## Supported Report Types
 
-- **Web Application VAPT** — paste an asset URL (`/assets/<id>`)
-- **Mobile Application VAPT** — paste an asset URL (`/assets/<id>`)
+- **Web Application VAPT** — paste an asset URL or view url
+- **Mobile Application VAPT** — paste an asset URL or view url
 - **Network VAPT** — paste a findings view URL (`/findings?query=...&viewId=...`) with scan-based or tag-based filters
 
 ## Setup
